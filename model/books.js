@@ -15,6 +15,9 @@ const booksSchema = new mongoose.Schema(
       unique: true,
       trim: true,
     },
+    coverImage: {
+      type: String,
+    },
     author: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Author",
@@ -28,6 +31,10 @@ const booksSchema = new mongoose.Schema(
     borrowedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Student",
+    },
+    ifReturned: {
+      type: Boolean,
+      default: false,
     },
     issuedBy: {
       type: mongoose.Schema.Types.ObjectId,

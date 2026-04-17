@@ -19,10 +19,14 @@ const authorSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    profileImage: {
+      type: String,
+    },
     books: [
       {
         type: mongoose.Schema.Types.ObjectId,
         ref: "Book",
+        default: [],
       },
     ],
     role: {

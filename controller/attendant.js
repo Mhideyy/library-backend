@@ -1,6 +1,9 @@
 import attendant from "../model/attendant.js";
+import cloudinary from "../configs/cloudinary.js";
+import emailSender from "../middleware/emailSender.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import sendEmail from "../middleware/emailSender.js";
 
 const createAttendant = async (req, res) => {
   const { password, email, ...others } = req.body;
@@ -10,28 +13,39 @@ const createAttendant = async (req, res) => {
         .status(400)
         .json({ message: "Email and password are required" });
     }
+    console.log(email);
     const existingAttendant = await attendant.findOne({ email });
     if (existingAttendant) {
       return res.status(400).json({ message: "Attendant already exists" });
+    }
+    let profileImage = "";
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      profileImage = result.secure_url;
     }
     const hashedPassword = await bcrypt.hash(password, 10);
     const newAttendant = new attendant({
       ...others,
       email,
+      profileImage,
       password: hashedPassword,
     });
     await newAttendant.save();
+    await emailSender(
+      email,
+      "Welcome to the Library Management as an Attendant! 🎉",
+      "welcome",
+      { name: newAttendant.name },
+    );
     const attendantResponse = {
       _id: newAttendant._id,
       name: newAttendant.name,
       email: newAttendant.email,
     };
-    res
-      .status(201)
-      .json({
-        message: "Attendant created successfully",
-        attendant: attendantResponse,
-      });
+    res.status(201).json({
+      message: "Attendant created successfully",
+      attendant: attendantResponse,
+    });
   } catch (error) {
     console.log(error);
     res.status(500).json({ message: "Error creating attendant" });
@@ -54,6 +68,9 @@ const loginAttendant = async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "1hr" },
     );
+    await emailSender(email, "Login Alert! 🚨", "login", {
+      name: existingAttendant.name,
+    });
     res
       .cookie("attendant_token", token)
       .status(200)
@@ -67,11 +84,33 @@ const loginAttendant = async (req, res) => {
 const updateAttendantPassword = async (req, res) => {
   try {
     const { id } = req.attendant;
-    const { password, ...others } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const { newPassword, oldPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+    const user = await attendant.findById(id);
+    if (!user) {
+      return res.status(404).json({ message: "Attendant not found" });
+    }
+    await sendEmail(user.email, "Password Change Alert! 🔒", "resetPassword", {
+      name: user.name,
+    });
+    const isPasswordValid = await bcrypt.compare(oldPassword, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ message: "Invalid current password" });
+    }
+    const isSamePassword = await bcrypt.compare(newPassword, user.password);
+    if (isSamePassword) {
+      return res
+        .status(400)
+        .json({ message: "new password cannot be the same as old" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
     const updatedAttendant = await attendant.findByIdAndUpdate(
       id,
-      { ...others, password: hashedPassword },
+      { password: hashedPassword },
       { new: true },
     );
     res.status(200).json(updatedAttendant);
@@ -84,9 +123,14 @@ const updateAttendantDetails = async (req, res) => {
   const { id } = req.attendant;
   try {
     const { email, name } = req.body;
+    let profileImage = req.attendant.profileImage;
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      profileImage = result.secure_url;
+    }
     const updatedAttendant = await attendant.findByIdAndUpdate(
       id,
-      { email, name },
+      { email, name, profileImage },
       { new: true },
     );
     res.status(200).json(updatedAttendant);

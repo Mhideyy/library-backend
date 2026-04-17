@@ -1,20 +1,16 @@
 import express, { json } from "express";
-import mongoose from "mongoose";
+import mongoose from "./configs/database.js";
 import cookies from "cookie-parser";
-import dotenv from "dotenv";
 
 import authorRoute from "./route/author.js";
 import attendantRoute from "./route/attendant.js";
 import studentRoute from "./route/student.js";
 import bookRoute from "./route/books.js";
 
-dotenv.config();
+// database connection
+mongoose;
 
-mongoose
-  .connect(process.env.MONGOURL)
-  .then(() => console.log("connected to MongoDB"))
-  .catch((err) => console.log(err));
-
+// create express app
 const app = express();
 
 app.use(json());

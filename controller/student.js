@@ -1,6 +1,8 @@
 import student from "../model/student.js";
 import books from "../model/books.js";
 import attendant from "../model/attendant.js";
+import cloudinary from "../configs/cloudinary.js";
+import sendEmail from "../middleware/emailSender.js";
 import author from "../model/author.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -17,17 +19,27 @@ const createStudent = async (req, res) => {
     if (existingStudent) {
       return res.status(400).json({ message: "Student already exists" });
     }
+    let profileImage = "";
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      profileImage = result.secure_url;
+    }
     const hashedPassword = await bcrypt.hash(password, 10);
     const newStudent = new student({
       ...others,
       email,
+      profileImage,
       password: hashedPassword,
     });
     await newStudent.save();
+    await sendEmail(newStudent.email, "Welcome to our Library! 📚", "welcome", {
+      name: newStudent.name,
+    });
     const studentResponse = {
       _id: newStudent._id,
       name: newStudent.name,
       email: newStudent.email,
+      profileImage: newStudent.profileImage,
     };
     res.status(201).json({
       message: "Student created successfully",
@@ -59,6 +71,9 @@ const loginStudent = async (req, res) => {
       .cookie("user_token", token)
       .status(200)
       .json({ message: "Login successful" });
+    await sendEmail(email, "Login Alert! 🚨", "login", {
+      name: existingStudent.name,
+    });
   } catch (error) {
     res.status(500).json({ message: "Error logging in student" });
   }
@@ -67,11 +82,30 @@ const loginStudent = async (req, res) => {
 const updateStudentPassword = async (req, res) => {
   try {
     const { id } = req.user;
-    const { password, ...others } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const { newPassword, oldPassword } = req.body;
+    if (!newPassword || !oldPassword) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+    const user = await student.findById(id);
+    if (!user) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+    await sendEmail(user.email, "Password Change Alert! 🔒", "resetPassword", {
+      name: user.name,
+    });
+    const isPassword = await bcrypt.compare(oldPassword, user.password);
+    if (newPassword === user.password) {
+      return res
+        .status(400)
+        .json({ message: "New password cannot be the same" });
+    }
+    if (!isPassword) {
+      return res.status(400).json({ message: "invalid old password" });
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
     const updatedStudent = await student.findByIdAndUpdate(
       id,
-      { ...others, password: hashedPassword },
+      { password: hashedPassword },
       { new: true },
     );
     res.status(200).json(updatedStudent);
@@ -84,9 +118,14 @@ const updateStudentDetails = async (req, res) => {
   const { id } = req.user;
   try {
     const { email, name } = req.body;
+    let profileImage = req.user.profileImage;
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      profileImage = result.secure_url;
+    }
     const updatedStudent = await student.findByIdAndUpdate(
       id,
-      { email, name },
+      { email, name, profileImage },
       { new: true },
     );
     res.status(200).json(updatedStudent);
@@ -137,7 +176,7 @@ const borrowBook = async (req, res) => {
       return res.status(404).json({ message: "Student not found" });
     }
 
-    const book = await books.findOne({ title });
+    const book = await books.findOne({ title }).populate("author");
     if (!book) {
       return res.status(404).json({ message: "Book not found" });
     }
@@ -193,6 +232,35 @@ const borrowBook = async (req, res) => {
       attendantData.totalBooksIssued += 1;
       await attendantData.save();
     }
+
+    await sendEmail(
+      attendantData.email,
+      "Borrowed Book Alert! 📚",
+      "attendantBorrow",
+      {
+        name: attendantData.name,
+        borrowerName: studentData.name,
+        title: book.title,
+      },
+    );
+
+    await sendEmail(studentData.email, "Borrowed Book Alert! 📚", "borrowed", {
+      name: studentData.name,
+      title: book.title,
+    });
+
+    await sendEmail(
+      book.author.email,
+      "Book Borrowed! 📚",
+      "authorBookBorrowed",
+      {
+        name: book.author.name,
+        borrowerName: studentData.name,
+        title: book.title,
+        remainingCopies: book.availableCopies,
+      },
+    );
+
     res.status(200).json({
       message: "Book borrowed successfully",
       bookTitle: book.title,
@@ -220,7 +288,7 @@ const returnBook = async (req, res) => {
       return res.status(404).json({ message: "Student not found" });
     }
     // Check if the student has borrowed the book
-    const book = await books.findOne({ title });
+    const book = await books.findOne({ title }).populate("author");
     if (!book) {
       return res.status(404).json({ message: "Book not found" });
     }
@@ -246,6 +314,7 @@ const returnBook = async (req, res) => {
       returnedAt: new Date(),
     });
     await studentData.save();
+    book.ifReturned = true;
 
     book.availableCopies += 1;
     await book.save();
@@ -261,7 +330,41 @@ const returnBook = async (req, res) => {
       });
       attendantData.totalBooksRecieved += 1;
       await attendantData.save();
+
+      await sendEmail(
+        attendantData.email,
+        "Received Book Alert! 📚",
+        "attendantRecieved",
+        {
+          name: attendantData.name,
+          title: book.title,
+          borrowerName: studentData.name,
+        },
+      );
+
+      await sendEmail(
+        book.author.email,
+        "Book Returned! 📚",
+        "authorBookReturned",
+        {
+          name: book.author.name,
+          title: book.title,
+          remainingCopies: book.availableCopies,
+          borrowerName: studentData.name,
+        },
+      );
+
+      await sendEmail(
+        studentData.email,
+        "Returned Book Alert! 📚",
+        "returned",
+        {
+          name: studentData.name,
+          title: book.title,
+        },
+      );
     }
+
     res.status(200).json({
       message: "Book returned successfully",
       copiesLeft: book ? book.availableCopies : "N/A",

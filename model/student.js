@@ -15,6 +15,9 @@ const studentSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    profileImage: {
+      type: String,
+    },
     borrowedBooks: [
       {
         book: { type: mongoose.Schema.Types.ObjectId, ref: "Books" },

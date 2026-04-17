@@ -1,6 +1,9 @@
 import author from "../model/author.js";
+import books from "../model/books.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import cloudinary from "../configs/cloudinary.js";
+import emailSender from "../middleware/emailSender.js";
 
 const createAuthor = async (req, res) => {
   const { password, email, ...others } = req.body;
@@ -14,14 +17,25 @@ const createAuthor = async (req, res) => {
     if (existingAuthor) {
       return res.status(400).json({ message: "Author already exists" });
     }
-
+    let profileImage = "";
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      profileImage = result.secure_url;
+    }
     const hashedPassword = await bcrypt.hash(password, 10);
     const newAuthor = new author({
       ...others,
       email,
+      profileImage,
       password: hashedPassword,
     });
     await newAuthor.save();
+    await emailSender(
+      email,
+      "Welcome to the Library Management as an Author! 🎉",
+      "welcome",
+      { name: newAuthor.name },
+    );
     const authorResponse = {
       _id: newAuthor._id,
       name: newAuthor.name,
@@ -51,6 +65,7 @@ const loginAuthor = async (req, res) => {
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
       expiresIn: "1hr",
     });
+    await emailSender(email, "Login Alert! 🚨", "login", { name: user.name });
     res
       .cookie("author_token", token)
       .status(200)
@@ -64,15 +79,41 @@ const loginAuthor = async (req, res) => {
 const updateAuthorPassword = async (req, res) => {
   try {
     const { id } = req.author;
-    const { password, ...others } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const { newPassword, oldPassword } = req.body;
+    const user = await author.findById(id).select("+password");
+    if (!user) {
+      return res.status(404).json({ message: "Author not found" });
+    }
+    if (!newPassword || !oldPassword) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+    await emailSender(
+      user.email,
+      "Password Change Alert! 🔒",
+      "resetPassword",
+      { name: user.name },
+    );
+    console.log("oldPassword", oldPassword);
+    console.log("user.password", user.password);
+    const isPasswordValid = await bcrypt.compare(oldPassword, user.password);
+    if (!isPasswordValid) {
+      return res.status(400).json({ message: "Invalid current password" });
+    }
+    const isSamePassword = await bcrypt.compare(newPassword, user.password);
+    if (isSamePassword) {
+      return res
+        .status(400)
+        .json({ message: "new password cannot be the same as old password," });
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
     const updatedAuthor = await author.findByIdAndUpdate(
       id,
-      { ...others, password: hashedPassword },
+      { password: hashedPassword },
       { new: true },
     );
     res.status(200).json(updatedAuthor);
   } catch (error) {
+    // console.log(error);
     res.status(500).json({ message: "Error updating author" });
   }
 };
@@ -81,9 +122,14 @@ const updateAuthorDetails = async (req, res) => {
   const { id } = req.author;
   try {
     const { email, name } = req.body;
+    let profileImage = req.author.profileImage;
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      profileImage = result.secure_url;
+    }
     const updatedAuthor = await author.findByIdAndUpdate(
       id,
-      { email, name },
+      { email, name, profileImage },
       { new: true },
     );
     res.status(200).json(updatedAuthor);
@@ -115,12 +161,13 @@ const deleteAuthor = async (req, res) => {
 
 const getAuthorBooks = async (req, res) => {
   try {
-    const { id } = req.user;
+    const { authorId } = req.params;
     const authorBooks = await books
-      .find({ author: id })
+      .find({ author: authorId })
       .populate("author", "name");
     res.status(200).json(authorBooks);
   } catch (error) {
+    console.log(error);
     res.status(500).json({ message: "Error fetching author's books" });
   }
 };

@@ -1,17 +1,23 @@
 import books from "../model/books.js";
 import author from "../model/author.js";
+import student from "../model/student.js";
 import attendant from "../model/attendant.js";
+import emailSender from "../middleware/emailSender.js";
+import cloudinary from "../configs/cloudinary.js";
+import parser from "../middleware/cloudinary.js";
 
 const createBooks = async (req, res) => {
   try {
     const { id } = req.author;
+
     if (!id) {
       return res.status(401).json({ message: "Author not authenticated" });
     }
 
     const { title, Isbn, ...others } = req.body;
+
     const existingBook = await books.findOne({
-      title: title,
+      title,
       author: id,
     });
 
@@ -20,51 +26,99 @@ const createBooks = async (req, res) => {
         message: "You have already created a book with this title",
       });
     }
-    let getIsbn = Isbn;
-    if (!getIsbn) {
-      getIsbn = "";
-      for (let i = 0; i < 10; i++) {
-        getIsbn += Math.floor(Math.random() * 10);
-      }
+
+    // Generate ISBN if missing
+    let getIsbn =
+      Isbn ||
+      Array.from({ length: 10 }, () => Math.floor(Math.random() * 10)).join("");
+
+    // Upload image if exists
+    let image = "";
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      image = result.secure_url;
     }
 
-    const newBook = new books({
+    // Create book
+    const newBook = await books.create({
       title,
       author: id,
       Isbn: getIsbn,
+      image,
       ...others,
     });
 
-    await newBook.save();
+    // Get author
+    const bookAuthor = await author.findById(id);
 
-    const authorData = await author.findById(id);
-    if (authorData) {
-      authorData.books = authorData.books || [];
-      authorData.books.push(newBook._id);
-      authorData.totalBooks = (authorData.totalBooks || 0) + 1;
-      await authorData.save();
+    if (!bookAuthor) {
+      return res.status(404).json({ message: "Author not found" });
     }
-    res.status(201).json({
+
+    // IMPORTANT: populate books safely
+    bookAuthor.books = bookAuthor.books || [];
+    bookAuthor.books.push(newBook._id);
+    bookAuthor.totalBooks = bookAuthor.books.length;
+
+    await bookAuthor.save();
+
+    // Get all users safely (NO NULLS)
+    const allUsers = [
+      ...(await student.find({}, "email name")),
+      ...(await attendant.find({}, "email name")),
+      ...(await author.find({}, "email name")),
+    ].filter((u) => u && u.email);
+
+    // Send emails (safe + corrected payload)
+    await Promise.all(
+      allUsers.map(async (user) => {
+        try {
+          await emailSender(user.email, "New Book Alert! 📚", "newBook", {
+            name: user.name,
+            title: newBook.title,
+            author: bookAuthor.name,
+            isbn: newBook.Isbn,
+          });
+        } catch (err) {
+          console.error("Email failed for:", user.email, err.message);
+        }
+      }),
+    );
+
+    // Email author only once (no duplicate update logic)
+    if (bookAuthor.email) {
+      await emailSender(
+        bookAuthor.email,
+        "New Book Created! 📚",
+        "newBookPublish",
+        {
+          name: bookAuthor.name,
+          bookTitle: newBook.title,
+          totalBooks: bookAuthor.totalBooks,
+        },
+      );
+    }
+
+    return res.status(201).json({
       message: "Book created successfully",
       book: {
         _id: newBook._id,
         title: newBook.title,
         Isbn: newBook.Isbn,
-        author: newBook.author,
-        content: newBook.content,
+        author: bookAuthor.name,
+        image: newBook.image,
         totalCopies: newBook.totalCopies,
         availableCopies: newBook.availableCopies,
       },
     });
   } catch (error) {
     console.error("Create Book Error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       message: "Error creating book",
       error: error.message,
     });
   }
 };
-
 const getBooks = async (req, res) => {
   try {
     const allBooks = await books
@@ -98,19 +152,42 @@ const getBookById = async (req, res) => {
 const updateBook = async (req, res) => {
   try {
     const { id } = req.params;
-    const { authorId, Isbn, ...others } = req.body;
-    const updatedBook = await books.findByIdAndUpdate(
-      id,
-      { ...others, authorId },
-      { new: true },
-    );
-    if (!updatedBook) {
+    const book = await books.findById(id);
+    if (!book) {
       return res.status(404).json({ message: "Book not found" });
     }
+    const { authorId, Isbn, ...others } = req.body;
+    // update cover image if a new one is provided
+    let coverImage = book.coverImage;
+    if (req.file) {
+      const result = await cloudinary.uploader.upload(req.file.path);
+      coverImage = result.secure_url;
+    }
+
+    // update the book details
+    const updatedBook = await books.findByIdAndUpdate(
+      id,
+      { ...others, authorId, coverImage },
+      { new: true },
+    );
     res.status(200).json(updatedBook);
   } catch (error) {
     res.status(500).json({ message: "Error updating book" });
   }
 };
 
-export { createBooks, getBooks, getBookById, updateBook };
+const deleteBook = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const book = await books.findById(id);
+    if (!book) {
+      return res.status(404).json({ message: "Book not found" });
+    }
+    await books.findByIdAndDelete(id);
+    res.status(200).json({ message: "Book deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error deleting book" });
+  }
+};
+
+export { createBooks, getBooks, getBookById, updateBook, deleteBook };
